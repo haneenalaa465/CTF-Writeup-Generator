@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-CTF Writeup Model Trainer - FIXED VERSION
-Fine-tunes microsoft/DialoGPT-medium on CTF writeup data
-"""
-
 import json
 import torch
 import pandas as pd
@@ -170,15 +164,37 @@ class CTFWriteupTrainer:
         df = pd.DataFrame(training_data)
         dataset = Dataset.from_pandas(df)
         
-        # Split dataset
-        train_test = dataset.train_test_split(test_size=0.2, seed=42)
-        val_test = train_test['test'].train_test_split(test_size=0.25, seed=42)
-        
-        dataset_dict = DatasetDict({
-            'train': train_test['train'],
-            'validation': val_test['train'],
-            'test': val_test['test']
-        })
+        dataset_dict = DatasetDict()
+
+        # --- FIX START ---
+        # Adjust splitting strategy based on the number of samples
+        if successful_pairs >= 3: # Minimum for train, validation, test (at least 1 each)
+            # Perform a 80/20 train/temp split
+            train_temp_split = dataset.train_test_split(test_size=0.2, seed=42)
+            dataset_dict['train'] = train_temp_split['train']
+
+            # Now, split the temporary set into validation and test
+            # Ensure there's enough data in 'test' part of train_temp_split for a further split
+            if len(train_temp_split['test']) >= 2: # Need at least 2 samples to split into 1 for val and 1 for test
+                val_test_split = train_temp_split['test'].train_test_split(test_size=0.5, seed=42) # Split 50/50 for val/test
+                dataset_dict['validation'] = val_test_split['train']
+                dataset_dict['test'] = val_test_split['test']
+            else: # If temp split has 0 or 1 sample, assign it entirely to validation
+                logger.warning("Not enough samples for a separate test set. Using remaining data for validation only.")
+                dataset_dict['validation'] = train_temp_split['test']
+                dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []}) # Empty test set
+        elif successful_pairs >= 2: # Minimum for train and validation (no separate test set)
+            logger.warning("Not enough samples for train, validation, and test split. Splitting into train and validation only.")
+            train_val_split = dataset.train_test_split(test_size=0.5, seed=42) # 50/50 split
+            dataset_dict['train'] = train_val_split['train']
+            dataset_dict['validation'] = train_val_split['test']
+            dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []}) # Empty test set
+        else: # If less than 2 samples, all goes to train (no validation or test)
+            logger.error("Extremely few training examples. Cannot create validation or test sets.")
+            dataset_dict['train'] = dataset
+            dataset_dict['validation'] = Dataset.from_dict({'text': [], 'category': []}) # Empty validation set
+            dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []}) # Empty test set
+        # --- FIX END ---
         
         # FIX 6: Improved tokenization function
         def tokenize_function(examples):
@@ -195,13 +211,19 @@ class CTFWriteupTrainer:
             tokenized["labels"] = tokenized["input_ids"].copy()
             return tokenized
         
-        tokenized_datasets = dataset_dict.map(
-            tokenize_function,
-            batched=True,
-            remove_columns=['text', 'category']  # Remove original columns
-        )
+        # Only map existing splits
+        for split_name in dataset_dict.keys():
+            if len(dataset_dict[split_name]) > 0: # Only tokenize if the split is not empty
+                dataset_dict[split_name] = dataset_dict[split_name].map(
+                    tokenize_function,
+                    batched=True,
+                    remove_columns=['text', 'category']  # Remove original columns
+                )
+            else:
+                 # If a split is empty, ensure it's still a Dataset object, even if empty
+                 dataset_dict[split_name] = Dataset.from_dict({'input_ids': [], 'attention_mask': [], 'labels': []})
         
-        return tokenized_datasets
+        return dataset_dict
     
     def train(self, tokenized_datasets: DatasetDict):
         """Train the model - FIXED"""
@@ -250,7 +272,8 @@ class CTFWriteupTrainer:
             model=self.model,
             args=training_args,
             train_dataset=tokenized_datasets['train'],
-            eval_dataset=tokenized_datasets['validation'],
+            # Conditionally provide eval_dataset
+            eval_dataset=tokenized_datasets['validation'] if len(tokenized_datasets['validation']) > 0 else None,
             tokenizer=self.tokenizer,  # Keep using tokenizer parameter
             data_collator=data_collator,
         )
@@ -337,16 +360,20 @@ def main():
         logger.info(f"  Test: {len(tokenized_datasets['test'])}")
         
         # Train
-        trainer_obj = trainer.train(tokenized_datasets)
-        
-        # Test with sample prompt
-        test_prompt = "<|challenge|>SQL Injection Login Bypass | Web | Easy | 100 points\n\nCan you bypass the login form at http://challenge.com/login? The application uses basic SQL authentication with no input validation.<|writeup|>"
-        
-        trainer.test_model(test_prompt)
-        
-        logger.info("\n🎉 Training completed successfully!")
-        logger.info(f"Model saved to: {trainer.output_dir}")
-        
+        # Only train if there's a non-empty training set
+        if len(tokenized_datasets['train']) > 0:
+            trainer_obj = trainer.train(tokenized_datasets)
+            
+            # Test with sample prompt
+            test_prompt = "<|challenge|>SQL Injection Login Bypass | Web | Easy | 100 points\n\nCan you bypass the login form at [http://challenge.com/login](http://challenge.com/login)? The application uses basic SQL authentication with no input validation.<|writeup|>"
+            
+            trainer.test_model(test_prompt)
+            
+            logger.info("\n🎉 Training completed successfully!")
+            logger.info(f"Model saved to: {trainer.output_dir}")
+        else:
+            logger.error("No training data available. Skipping training and testing.")
+            
     except Exception as e:
         logger.error(f"❌ Error during training: {str(e)}")
         raise
