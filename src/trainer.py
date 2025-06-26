@@ -242,7 +242,7 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
         """Train the model"""
         logger.info("🚀 Starting model training...")
         
-        # Training arguments
+        # Training arguments - FIXED: Changed evaluation_strategy to eval_strategy
         training_args = TrainingArguments(
             output_dir=self.output_dir,
             overwrite_output_dir=True,
@@ -254,7 +254,7 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
             logging_steps=50,
             save_steps=500,
             eval_steps=500,
-            evaluation_strategy="steps",
+            eval_strategy="steps",  # FIXED: Changed from evaluation_strategy
             save_strategy="steps",
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
