@@ -4,7 +4,8 @@ import pandas as pd
 from datasets import Dataset, DatasetDict
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM,
-    TrainingArguments, Trainer, DataCollatorForLanguageModeling
+    TrainingArguments, Trainer, DataCollatorForLanguageModeling,
+    IntervalStrategy # Import IntervalStrategy
 )
 import logging
 from pathlib import Path
@@ -166,7 +167,7 @@ class CTFWriteupTrainer:
         
         dataset_dict = DatasetDict()
 
-        # --- FIX START ---
+        # --- FIX START (from previous response) ---
         # Adjust splitting strategy based on the number of samples
         if successful_pairs >= 3: # Minimum for train, validation, test (at least 1 each)
             # Perform a 80/20 train/temp split
@@ -194,7 +195,7 @@ class CTFWriteupTrainer:
             dataset_dict['train'] = dataset
             dataset_dict['validation'] = Dataset.from_dict({'text': [], 'category': []}) # Empty validation set
             dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []}) # Empty test set
-        # --- FIX END ---
+        # --- FIX END (from previous response) ---
         
         # FIX 6: Improved tokenization function
         def tokenize_function(examples):
@@ -230,6 +231,7 @@ class CTFWriteupTrainer:
         logger.info("🚀 Starting model training...")
         
         # FIX 8: Better training arguments
+        # Updated parameters for TrainingArguments
         training_args = TrainingArguments(
             output_dir=self.output_dir,
             overwrite_output_dir=True,
@@ -239,10 +241,13 @@ class CTFWriteupTrainer:
             gradient_accumulation_steps=8,
             warmup_steps=100,
             logging_steps=5,
-            save_steps=50,
+            # Removed 'evaluation_strategy' and 'save_strategy' and
+            # replaced with 'logging_strategy' and 'save_strategy'
+            # using IntervalStrategy for clarity and compatibility with newer versions.
+            evaluation_strategy=IntervalStrategy.STEPS, # Use enum for clarity
+            save_strategy=IntervalStrategy.STEPS,     # Use enum for clarity
             eval_steps=50,
-            evaluation_strategy="steps",
-            save_strategy="steps",
+            save_steps=50,
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
