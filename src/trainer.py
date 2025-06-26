@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CTF Writeup Model Trainer
+CTF Writeup Model Trainer - FIXED VERSION
 Fine-tunes microsoft/DialoGPT-medium on CTF writeup data
 """
 
@@ -16,6 +16,10 @@ import logging
 from pathlib import Path
 import re
 from typing import Dict, Tuple
+import warnings
+
+# Suppress specific warnings
+warnings.filterwarnings("ignore", category=UserWarning, message=".*attention_mask.*")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,28 +38,27 @@ class CTFWriteupTrainer:
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         
+        # FIX 1: Set pad_token to a unique token, not eos_token
+        self.tokenizer.pad_token = "<|pad|>"
+        
         # Add special tokens for CTF writeups
         special_tokens = {
             "additional_special_tokens": [
                 "<|challenge|>", "<|writeup|>", "<|solution_end|>",
-                "<|step|>", "<|flag|>", "<|code|>"
+                "<|step|>", "<|flag|>", "<|code|>", "<|pad|>"
             ]
         }
-        
-        # Set pad token
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
             
         # Add special tokens
         self.tokenizer.add_special_tokens(special_tokens)
         
-        # Load model with more conservative settings
+        # Load model
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
-            torch_dtype=torch.float32,  # FIXED: Use FP32 instead of FP16
-            device_map=None,  # FIXED: Let PyTorch handle device placement
+            torch_dtype=torch.float32,
+            device_map=None,
             trust_remote_code=True,
-            low_cpu_mem_usage=True  # Enable memory efficient loading
+            low_cpu_mem_usage=True
         )
         
         # Move to GPU if available
@@ -72,17 +75,10 @@ class CTFWriteupTrainer:
         logger.info("✅ Model and tokenizer loaded successfully")
         
     def create_training_prompt(self, challenge_data: Dict) -> Tuple[str, str]:
-        """Create training prompt pairs"""
+        """Create training prompt pairs - FIXED"""
         
-        # Input prompt (what we give to the model)
-        input_prompt = f"""<|challenge|>Challenge: {challenge_data['title']}
-Category: {challenge_data['category']}
-Difficulty: {challenge_data['difficulty']}
-Points: {challenge_data['points']}
-
-Description: {challenge_data['description']}
-
-Write a detailed CTF writeup explaining how to solve this challenge step by step.<|writeup|>"""
+        # FIX 2: Create a cleaner format that's easier for the model to learn
+        input_prompt = f"<|challenge|>{challenge_data['title']} | {challenge_data['category']} | {challenge_data['difficulty']} | {challenge_data['points']} points\n\n{challenge_data['description']}<|writeup|>"
 
         # Target output (what we want the model to generate)
         target_output = self.format_writeup_output(challenge_data)
@@ -90,87 +86,51 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
         return input_prompt, target_output
     
     def format_writeup_output(self, data: Dict) -> str:
-        """Format the target writeup output"""
+        """Format the target writeup output - SIMPLIFIED"""
         
         content = data['full_content']
         
-        # Extract solution steps from content
-        solution_sections = self._extract_solution_sections(content)
-        
-        # Create formatted output
+        # FIX 3: Simpler, more consistent format
         formatted_output = f"""
-# {data['title']} - CTF Writeup
-
-## Challenge Overview
-**Category:** {data['category']}
-**Difficulty:** {data['difficulty']}
-**Points:** {data['points']}
-
-{data['description']}
-
 ## Solution
 
-"""
-        
-        # Add solution steps
-        if solution_sections:
-            for i, section in enumerate(solution_sections[:4], 1):  # Max 4 sections
-                formatted_output += f"### Step {i}\n{section.strip()}\n\n"
-        else:
-            # Fallback: extract meaningful content
-            formatted_output += self._extract_fallback_solution(content)
-        
-        # Add flag
-        formatted_output += f"""
+{self._extract_clean_solution(content)}
+
 ## Flag
-```
 {data['flag']}
-```
 <|solution_end|>"""
         
         return formatted_output.strip()
     
-    def _extract_solution_sections(self, content: str) -> list:
-        """Extract solution sections from writeup content"""
+    def _extract_clean_solution(self, content: str) -> str:
+        """Extract a clean, focused solution"""
         
-        # Look for sections with solution-related headings
-        section_patterns = [
-            r'(#{1,3}\s*(?:step|solution|approach|method|analysis|exploit).+?(?=\n#{1,3}|\Z))',
-            r'(#{1,3}\s*\d+\..+?(?=\n#{1,3}|\Z))',  # Numbered sections
-            r'(\*\*(?:step|solution|approach)\*\*.+?(?=\n\*\*|\Z))',  # Bold sections
-        ]
+        # Remove markdown headers and excessive formatting
+        content = re.sub(r'^#{1,6}\s*', '', content, flags=re.MULTILINE)
         
-        sections = []
-        for pattern in section_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
-            sections.extend(matches)
-            
-        return sections[:4]  # Limit to 4 sections
-    
-    def _extract_fallback_solution(self, content: str) -> str:
-        """Extract fallback solution if no clear sections found"""
+        # Split into paragraphs
+        paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
         
-        # Look for paragraphs that seem solution-related
-        paragraphs = content.split('\n\n')
+        # Filter for substantial paragraphs with solution content
         solution_paragraphs = []
-        
-        solution_keywords = ['solution', 'solve', 'exploit', 'payload', 'attack', 'vulnerability']
+        solution_keywords = ['step', 'first', 'then', 'next', 'run', 'execute', 'payload', 'exploit', 'solve']
         
         for para in paragraphs:
-            if (len(para.strip()) > 50 and 
-                any(keyword in para.lower() for keyword in solution_keywords)):
-                solution_paragraphs.append(para.strip())
+            if (len(para) > 30 and 
+                any(keyword in para.lower() for keyword in solution_keywords) and
+                not para.startswith('```')):  # Skip code blocks for now
+                solution_paragraphs.append(para)
                 
+        # Return top 3 solution paragraphs or fallback
         if solution_paragraphs:
-            return '\n\n'.join(solution_paragraphs[:3])  # Max 3 paragraphs
+            return '\n\n'.join(solution_paragraphs[:3])
         else:
-            # Last resort: use first few meaningful lines
-            lines = [line.strip() for line in content.split('\n') 
-                    if len(line.strip()) > 30]
-            return '\n\n'.join(lines[:5])
+            # Fallback: return first few meaningful paragraphs
+            meaningful = [p for p in paragraphs if len(p) > 50][:2]
+            return '\n\n'.join(meaningful) if meaningful else content[:500]
     
     def prepare_dataset(self, data_path: str) -> DatasetDict:
-        """Prepare dataset for training"""
+        """Prepare dataset for training - FIXED"""
         logger.info(f"📊 Loading dataset from {data_path}")
         
         # Load raw data
@@ -185,14 +145,14 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
             try:
                 input_prompt, target_output = self.create_training_prompt(item)
                 
-                # Quality check
-                if (len(target_output) > 100 and 
-                    len(input_prompt) > 50 and
-                    'flag' in target_output.lower()):
+                # FIX 4: Better quality checks
+                if (len(target_output) > 50 and 
+                    len(input_prompt) > 30 and
+                    item.get('flag', '') and
+                    len(input_prompt + target_output) < 800):  # Prevent overly long examples
                     
                     training_data.append({
-                        'input': input_prompt,
-                        'output': target_output,
+                        'text': input_prompt + target_output,  # FIX 5: Single text field
                         'category': item['category']
                     })
                     successful_pairs += 1
@@ -203,11 +163,14 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
         
         logger.info(f"✅ Created {successful_pairs} high-quality training examples")
         
+        if successful_pairs < 10:
+            logger.warning("⚠️  Very few training examples! Consider getting more data.")
+        
         # Create dataset
         df = pd.DataFrame(training_data)
         dataset = Dataset.from_pandas(df)
         
-        # Split: 80% train, 15% validation, 5% test
+        # Split dataset
         train_test = dataset.train_test_split(test_size=0.2, seed=42)
         val_test = train_test['test'].train_test_split(test_size=0.25, seed=42)
         
@@ -217,82 +180,78 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
             'test': val_test['test']
         })
         
-        # Tokenize
+        # FIX 6: Improved tokenization function
         def tokenize_function(examples):
-            # Combine input and output for causal LM
-            full_texts = []
-            for i in range(len(examples['input'])):
-                full_text = examples['input'][i] + examples['output'][i]
-                full_texts.append(full_text)
-            
             tokenized = self.tokenizer(
-                full_texts,
+                examples['text'],
                 truncation=True,
-                padding=True,  # FIXED: Enable padding
-                max_length=512,  # REDUCED: Smaller max length for stability
-                return_overflowing_tokens=False,
-                return_tensors=None  # Let the data collator handle tensor conversion
+                padding='max_length',  # Consistent padding
+                max_length=512,
+                return_attention_mask=True,  # FIX 7: Always return attention mask
+                return_tensors=None
             )
             
+            # Set labels (for causal LM, labels = input_ids)
             tokenized["labels"] = tokenized["input_ids"].copy()
             return tokenized
         
         tokenized_datasets = dataset_dict.map(
             tokenize_function,
             batched=True,
-            remove_columns=dataset_dict['train'].column_names
+            remove_columns=['text', 'category']  # Remove original columns
         )
         
         return tokenized_datasets
     
     def train(self, tokenized_datasets: DatasetDict):
-        """Train the model"""
+        """Train the model - FIXED"""
         logger.info("🚀 Starting model training...")
         
-        # Training arguments - FIXED: Disabled FP16 and adjusted settings
+        # FIX 8: Better training arguments
         training_args = TrainingArguments(
             output_dir=self.output_dir,
             overwrite_output_dir=True,
-            num_train_epochs=2,  # Reduced epochs for stability
-            per_device_train_batch_size=1,  # Further reduced batch size
-            per_device_eval_batch_size=1,
-            gradient_accumulation_steps=16,  # Increased to maintain effective batch size
-            warmup_steps=50,  # Reduced warmup steps
-            logging_steps=10,
-            save_steps=100,
-            eval_steps=100,
-            eval_strategy="steps",
+            num_train_epochs=3,
+            per_device_train_batch_size=2,  # Slightly larger batch
+            per_device_eval_batch_size=2,
+            gradient_accumulation_steps=8,
+            warmup_steps=100,
+            logging_steps=5,
+            save_steps=50,
+            eval_steps=50,
+            evaluation_strategy="steps",
             save_strategy="steps",
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
-            fp16=False,  # FIXED: Disabled FP16 to avoid gradient scaling issues
-            bf16=False,  # Also disable bf16 for safety
+            fp16=False,
             dataloader_pin_memory=False,
             remove_unused_columns=False,
-            learning_rate=3e-5,  # Slightly reduced learning rate
+            learning_rate=5e-5,  # Standard learning rate
             weight_decay=0.01,
-            lr_scheduler_type="linear",  # Changed to linear for stability
+            lr_scheduler_type="cosine",  # Better scheduler
             report_to="none",
-            save_total_limit=2,
-            max_grad_norm=1.0,  # Add gradient clipping
-            gradient_checkpointing=True,  # Enable gradient checkpointing to save memory
+            save_total_limit=3,
+            max_grad_norm=1.0,
+            gradient_checkpointing=True,
+            dataloader_num_workers=0,  # Avoid multiprocessing issues
         )
         
-        # Data collator - FIXED: Use padding for dynamic batching
+        # FIX 9: Proper data collator
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer,
-            mlm=False,  # Causal LM (not masked)
-            pad_to_multiple_of=8,  # Optimize for tensor cores
+            mlm=False,
+            pad_to_multiple_of=8,
+            return_tensors="pt"
         )
         
-        # Initialize trainer - FIXED: Use processing_class instead of tokenizer
+        # Initialize trainer
         trainer = Trainer(
             model=self.model,
             args=training_args,
             train_dataset=tokenized_datasets['train'],
             eval_dataset=tokenized_datasets['validation'],
-            processing_class=self.tokenizer,  # FIXED: Changed from tokenizer
+            tokenizer=self.tokenizer,  # Keep using tokenizer parameter
             data_collator=data_collator,
         )
         
@@ -308,31 +267,45 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
         return trainer
     
     def test_model(self, test_prompt: str):
-        """Test the trained model with a sample prompt"""
+        """Test the trained model - FIXED"""
         logger.info("🧪 Testing trained model...")
         
-        inputs = self.tokenizer.encode(test_prompt, return_tensors="pt")
+        # FIX 10: Proper input preparation with attention mask
+        inputs = self.tokenizer(
+            test_prompt, 
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=256
+        )
         
         if torch.cuda.is_available():
-            inputs = inputs.cuda()
+            inputs = {k: v.cuda() for k, v in inputs.items()}
             self.model = self.model.cuda()
         
         self.model.eval()
         with torch.no_grad():
             outputs = self.model.generate(
-                inputs,
-                max_length=512,
+                input_ids=inputs['input_ids'],
+                attention_mask=inputs['attention_mask'],  # FIX 11: Pass attention mask
+                max_new_tokens=200,  # Limit new tokens
                 num_return_sequences=1,
                 temperature=0.7,
                 do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
             )
         
-        generated = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Decode only the new tokens (skip input)
+        input_length = inputs['input_ids'].shape[1]
+        generated_tokens = outputs[0][input_length:]
+        generated = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
         print("\n" + "="*60)
         print("🎯 GENERATED WRITEUP TEST:")
         print("="*60)
+        print("INPUT:", test_prompt)
+        print("\nGENERATED:")
         print(generated)
         print("="*60)
 
@@ -367,21 +340,12 @@ def main():
         trainer_obj = trainer.train(tokenized_datasets)
         
         # Test with sample prompt
-        test_prompt = """<|challenge|>Challenge: SQL Injection Login Bypass
-Category: Web
-Difficulty: Easy
-Points: 100
-
-Description: Can you bypass the login form at http://challenge.com/login? The application uses basic SQL authentication with no input validation.
-
-Write a detailed CTF writeup explaining how to solve this challenge step by step.<|writeup|>"""
+        test_prompt = "<|challenge|>SQL Injection Login Bypass | Web | Easy | 100 points\n\nCan you bypass the login form at http://challenge.com/login? The application uses basic SQL authentication with no input validation.<|writeup|>"
         
         trainer.test_model(test_prompt)
         
         logger.info("\n🎉 Training completed successfully!")
         logger.info(f"Model saved to: {trainer.output_dir}")
-        logger.info("\nYou can now generate writeups using:")
-        logger.info("python src/generator.py")
         
     except Exception as e:
         logger.error(f"❌ Error during training: {str(e)}")
