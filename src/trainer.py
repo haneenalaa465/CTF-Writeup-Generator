@@ -5,7 +5,7 @@ from datasets import Dataset, DatasetDict
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM,
     TrainingArguments, Trainer, DataCollatorForLanguageModeling,
-    IntervalStrategy # Import IntervalStrategy
+    # Removed IntervalStrategy import as it's not needed with string arguments
 )
 import logging
 from pathlib import Path
@@ -167,35 +167,31 @@ class CTFWriteupTrainer:
         
         dataset_dict = DatasetDict()
 
-        # --- FIX START (from previous response) ---
-        # Adjust splitting strategy based on the number of samples
+        # --- Data splitting logic (from previous response) ---
         if successful_pairs >= 3: # Minimum for train, validation, test (at least 1 each)
-            # Perform a 80/20 train/temp split
             train_temp_split = dataset.train_test_split(test_size=0.2, seed=42)
             dataset_dict['train'] = train_temp_split['train']
 
-            # Now, split the temporary set into validation and test
-            # Ensure there's enough data in 'test' part of train_temp_split for a further split
-            if len(train_temp_split['test']) >= 2: # Need at least 2 samples to split into 1 for val and 1 for test
-                val_test_split = train_temp_split['test'].train_test_split(test_size=0.5, seed=42) # Split 50/50 for val/test
+            if len(train_temp_split['test']) >= 2:
+                val_test_split = train_temp_split['test'].train_test_split(test_size=0.5, seed=42)
                 dataset_dict['validation'] = val_test_split['train']
                 dataset_dict['test'] = val_test_split['test']
-            else: # If temp split has 0 or 1 sample, assign it entirely to validation
+            else:
                 logger.warning("Not enough samples for a separate test set. Using remaining data for validation only.")
                 dataset_dict['validation'] = train_temp_split['test']
-                dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []}) # Empty test set
-        elif successful_pairs >= 2: # Minimum for train and validation (no separate test set)
+                dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []})
+        elif successful_pairs >= 2:
             logger.warning("Not enough samples for train, validation, and test split. Splitting into train and validation only.")
-            train_val_split = dataset.train_test_split(test_size=0.5, seed=42) # 50/50 split
+            train_val_split = dataset.train_test_split(test_size=0.5, seed=42)
             dataset_dict['train'] = train_val_split['train']
             dataset_dict['validation'] = train_val_split['test']
-            dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []}) # Empty test set
-        else: # If less than 2 samples, all goes to train (no validation or test)
+            dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []})
+        else:
             logger.error("Extremely few training examples. Cannot create validation or test sets.")
             dataset_dict['train'] = dataset
-            dataset_dict['validation'] = Dataset.from_dict({'text': [], 'category': []}) # Empty validation set
-            dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []}) # Empty test set
-        # --- FIX END (from previous response) ---
+            dataset_dict['validation'] = Dataset.from_dict({'text': [], 'category': []})
+            dataset_dict['test'] = Dataset.from_dict({'text': [], 'category': []})
+        # --- End data splitting logic ---
         
         # FIX 6: Improved tokenization function
         def tokenize_function(examples):
@@ -241,11 +237,10 @@ class CTFWriteupTrainer:
             gradient_accumulation_steps=8,
             warmup_steps=100,
             logging_steps=5,
-            # Removed 'evaluation_strategy' and 'save_strategy' and
-            # replaced with 'logging_strategy' and 'save_strategy'
-            # using IntervalStrategy for clarity and compatibility with newer versions.
-            evaluation_strategy=IntervalStrategy.STEPS, # Use enum for clarity
-            save_strategy=IntervalStrategy.STEPS,     # Use enum for clarity
+            # --- FIX: Changed 'evaluation_strategy' to 'eval_strategy' and used string values ---
+            eval_strategy="steps", # Corrected argument name and value type
+            save_strategy="steps",     # Keep as steps (already using correct string type)
+            # --- End FIX ---
             eval_steps=50,
             save_steps=50,
             load_best_model_at_end=True,
