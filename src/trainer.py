@@ -222,9 +222,10 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
             tokenized = self.tokenizer(
                 full_texts,
                 truncation=True,
-                padding=False,
-                max_length=1024,  # Adjust based on GPU memory
+                padding=True,  # FIXED: Enable padding
+                max_length=512,  # REDUCED: Smaller max length for stability
                 return_overflowing_tokens=False,
+                return_tensors=None  # Let the data collator handle tensor conversion
             )
             
             tokenized["labels"] = tokenized["input_ids"].copy()
@@ -269,19 +270,20 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
             save_total_limit=2,  # Only keep 2 checkpoints
         )
         
-        # Data collator
+        # Data collator - FIXED: Use padding for dynamic batching
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer,
             mlm=False,  # Causal LM (not masked)
+            pad_to_multiple_of=8,  # Optimize for tensor cores
         )
         
-        # Initialize trainer
+        # Initialize trainer - FIXED: Use processing_class instead of tokenizer
         trainer = Trainer(
             model=self.model,
             args=training_args,
             train_dataset=tokenized_datasets['train'],
             eval_dataset=tokenized_datasets['validation'],
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,  # FIXED: Changed from tokenizer
             data_collator=data_collator,
         )
         
