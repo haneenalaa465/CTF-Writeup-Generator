@@ -15,7 +15,7 @@ A fine-tuned AI model that generates detailed CTF (Capture The Flag) writeups fr
 ### 1. Setup Environment
 
 ```bash
-git clone https://github.com/yourusername/ctf-writeup-generator.git
+git clone https://github.com/haneenalaa465/CTF-Writeup-Generator
 cd ctf-writeup-generator
 
 # Create virtual environment
