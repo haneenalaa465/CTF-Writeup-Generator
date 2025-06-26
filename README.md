@@ -98,10 +98,6 @@ We'll test basic SQL injection payloads like `' OR '1'='1`...
 
 ### Step 3: Bypassing Authentication
 Using the payload `admin'--` we can bypass the password check...
-
-## Flag
-```
-FLAG{sql_injection_master}
 ```
 
 ## 🤝 Contributing
