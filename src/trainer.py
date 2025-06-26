@@ -49,19 +49,25 @@ class CTFWriteupTrainer:
         # Add special tokens
         self.tokenizer.add_special_tokens(special_tokens)
         
-        # Load model
-        device_map = "auto" if torch.cuda.is_available() else None
-        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        
+        # Load model with more conservative settings
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
-            torch_dtype=torch_dtype,
-            device_map=device_map,
-            trust_remote_code=True
+            torch_dtype=torch.float32,  # FIXED: Use FP32 instead of FP16
+            device_map=None,  # FIXED: Let PyTorch handle device placement
+            trust_remote_code=True,
+            low_cpu_mem_usage=True  # Enable memory efficient loading
         )
+        
+        # Move to GPU if available
+        if torch.cuda.is_available():
+            self.model = self.model.cuda()
         
         # Resize token embeddings for new tokens
         self.model.resize_token_embeddings(len(self.tokenizer))
+        
+        # Enable gradient checkpointing to save memory
+        if hasattr(self.model, 'gradient_checkpointing_enable'):
+            self.model.gradient_checkpointing_enable()
         
         logger.info("✅ Model and tokenizer loaded successfully")
         
@@ -243,31 +249,34 @@ Write a detailed CTF writeup explaining how to solve this challenge step by step
         """Train the model"""
         logger.info("🚀 Starting model training...")
         
-        # Training arguments - FIXED: Changed evaluation_strategy to eval_strategy
+        # Training arguments - FIXED: Disabled FP16 and adjusted settings
         training_args = TrainingArguments(
             output_dir=self.output_dir,
             overwrite_output_dir=True,
-            num_train_epochs=3,
-            per_device_train_batch_size=2,  # Small batch size for stability
-            per_device_eval_batch_size=2,
-            gradient_accumulation_steps=8,  # Effective batch size = 2*8 = 16
-            warmup_steps=100,
-            logging_steps=50,
-            save_steps=500,
-            eval_steps=500,
-            eval_strategy="steps",  # FIXED: Changed from evaluation_strategy
+            num_train_epochs=2,  # Reduced epochs for stability
+            per_device_train_batch_size=1,  # Further reduced batch size
+            per_device_eval_batch_size=1,
+            gradient_accumulation_steps=16,  # Increased to maintain effective batch size
+            warmup_steps=50,  # Reduced warmup steps
+            logging_steps=10,
+            save_steps=100,
+            eval_steps=100,
+            eval_strategy="steps",
             save_strategy="steps",
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
-            fp16=torch.cuda.is_available(),
+            fp16=False,  # FIXED: Disabled FP16 to avoid gradient scaling issues
+            bf16=False,  # Also disable bf16 for safety
             dataloader_pin_memory=False,
             remove_unused_columns=False,
-            learning_rate=5e-5,
+            learning_rate=3e-5,  # Slightly reduced learning rate
             weight_decay=0.01,
-            lr_scheduler_type="cosine",
-            report_to="none",  # Disable wandb for simplicity
-            save_total_limit=2,  # Only keep 2 checkpoints
+            lr_scheduler_type="linear",  # Changed to linear for stability
+            report_to="none",
+            save_total_limit=2,
+            max_grad_norm=1.0,  # Add gradient clipping
+            gradient_checkpointing=True,  # Enable gradient checkpointing to save memory
         )
         
         # Data collator - FIXED: Use padding for dynamic batching
